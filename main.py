@@ -6625,11 +6625,11 @@ def start_update_check(manual=False):
         return
     if not update_repo_ok():
         if manual:
-            log("Error: update checker - set UPDATE_REPO (owner/repo) at the top of the script")
+            log("Erreur: vérificateur de mises à jour - met UPDATE_REPO (owner/repo) en haut du script")
         return
     _update["busy"] = True
     if manual:
-        log("Checking for updates...")
+        log("Je check les updates en vif...")
     threading.Thread(target=_update_check_worker, args=(manual,), daemon=True).start()
 
 
@@ -6639,7 +6639,7 @@ def _install_update_worker(info):
     exe = sys.executable
     new_path = exe + ".new"
     try:
-        log(f"Downloading {info['tag']}...")
+        log(f"Téléchargement de la {info['tag']}...")
         req = urllib.request.Request(info["url"], headers={"User-Agent": "ymir-macro-updater"})
         sha = hashlib.sha256()
         done, last_pct = 0, -1
@@ -6692,10 +6692,10 @@ def _install_update_worker(info):
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         subprocess.Popen(["cmd", "/c", bat], env=env, close_fds=True,
                          creationflags=0x08000000 | 0x00000008)   # no window, detached
-        log("Update downloaded - restarting...")
+        log("Mise à jour installée - merci pour le pc, je rigole...")
         ev.put(("update_ready",))
     except Exception as e:  # noqa: BLE001
-        log(f"Error: update failed - {type(e).__name__}: {e}")
+        log(f"Erreur: mise à jour échouée - {type(e).__name__}: {e}")
         try:
             os.remove(new_path)
         except OSError:
@@ -7423,26 +7423,26 @@ class App:
         _update["busy"] = False
         if error:
             if manual:
-                log(f"Error: update check failed - {error}")
+                log(f"Erreur: update check n'a pas fonctionné - {error}")
             return
         if not info or parse_version(info["tag"]) <= parse_version(VERSION):
             if manual:
-                log(f"You are on the latest version ({VERSION})")
+                log(f"Tu as la dernière version ({VERSION})")
             return
-        log(f"Update available: {info['tag']} (you have {VERSION})")
+        log(f"mise à jour disponible: {info['tag']} (tu as {VERSION})")
         if running():
-            log("Stop the macro first, then click Updates to install it")
+            log("Arrête la macro avant, puis fait Updates pour l'installer")
             return
         if not getattr(sys, "frozen", False) or not info["url"]:
             # plain .py (or a release without an .exe): just open the release page
-            if messagebox.askyesno("Update available",
-                                   f"{info['tag']} is available (you have {VERSION}).\n\n"
-                                   "Open the release page?", parent=self.root):
+            if messagebox.askyesno("Mise à jour disponible",
+                                   f"{info['tag']} est disponible (tu as la {VERSION}).\n\n"
+                                   "Tu veux ouvrir la page de la release?", parent=self.root):
                 webbrowser.open(info["page"])
             return
-        if messagebox.askyesno("Update available",
-                               f"{info['tag']} is available (you have {VERSION}).\n\n"
-                               "Download it and restart the macro now?", parent=self.root):
+        if messagebox.askyesno("Mise à jour disponible",
+                               f"{info['tag']} est disponible (tu as la {VERSION}).\n\n"
+                               "Télécharger et redémarrer la macro maintenant?", parent=self.root):
             _update["busy"] = True
             install_update(info)
 
