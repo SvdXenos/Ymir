@@ -166,7 +166,7 @@ if IS_WIN:
     pydirectinput.moveTo = _moveTo
 
 # ----------------------------- SETTINGS ---------------------------------
-VERSION = "v6.0.1"        # release version tag
+VERSION = "v6.0.2"        # release version tag
                           # (shown in the footer, next to "Always on top")
 
 # --- Update checker (footer > Updates) ---
@@ -6029,11 +6029,7 @@ class Stepper(tk.Canvas):
             rounded_rect(self, x1, 0, x1 + seg, 6, App.R_SEG, fill=col, outline="")
 
 
-# ----- dashboard drawn on one canvas: translucent cards over a background picture -----
-# Tk widgets cannot be see-through, so the main window is a single Canvas: the background is
-# an image item, the cards are semi-transparent PNG panels (rounded, with a soft glow) and the
-# texts / counters are canvas items. The small classes below keep the interface of the widgets
-# they replace (configure / cget / update_tile ...), so the rest of the app is unchanged.
+# ----- dashboard canvas: translucent -----
 PANEL_PAD = 14          # room around a panel image for its soft glow
 _panel_cache = {}
 
