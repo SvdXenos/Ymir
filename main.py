@@ -176,6 +176,7 @@ UPDATE_TIMEOUT = 15                # seconds before a GitHub request is given up
 
 # --- Window logo (keep next to this script; falls back to the text "ymir" if missing) ---
 LOGO_FILE = "ymir_logo_app.png"
+BACKGROUND_FILE = "ymir_background.png"   # optional dashboard background (image folder); a soft glow if missing
 ICON_FILE = "ymir.ico"   # window / taskbar icon (the lambda); skipped if missing
 FILE_ICON_FILE = "ymir_file.ico"   # icon of the .ymir files in Explorer (only the lambda: white, black outline,
                                    # transparent). Lives in the image folder next to ymir.ico; skipped if missing
@@ -6028,6 +6029,330 @@ class Stepper(tk.Canvas):
             rounded_rect(self, x1, 0, x1 + seg, 6, App.R_SEG, fill=col, outline="")
 
 
+# ----- dashboard drawn on one canvas: translucent cards over a background picture -----
+# Tk widgets cannot be see-through, so the main window is a single Canvas: the background is
+# an image item, the cards are semi-transparent PNG panels (rounded, with a soft glow) and the
+# texts / counters are canvas items. The small classes below keep the interface of the widgets
+# they replace (configure / cget / update_tile ...), so the rest of the app is unchanged.
+PANEL_PAD = 14          # room around a panel image for its soft glow
+_panel_cache = {}
+
+
+def _rgb(hex_color):
+    return np.array([int(hex_color[i:i + 2], 16) for i in (1, 3, 5)], np.float32)
+
+
+def _over(dst_rgb, dst_a, src_rgb, src_a):
+    """Alpha-composite one layer on another (straight alpha, float arrays)."""
+    out_a = src_a + dst_a * (1.0 - src_a)
+    w_dst = (dst_a * (1.0 - src_a))[..., None]
+    rgb = (src_rgb * src_a[..., None] + dst_rgb * w_dst) / np.maximum(out_a, 1e-6)[..., None]
+    return rgb, out_a
+
+
+def panel_rgba(w, h, r, fill, fill_a, edge, edge_a, glow, glow_a, bw=1.5):
+    """A rounded translucent panel (fill + lit edge + soft outer glow) as a BGRA array."""
+    pad = PANEL_PAD
+    W, H = w + 2 * pad, h + 2 * pad
+    r = max(0.0, min(float(r), w / 2 - 1, h / 2 - 1))
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    px = np.abs(xx + 0.5 - W / 2) - (w / 2 - r)
+    py = np.abs(yy + 0.5 - H / 2) - (h / 2 - r)
+    sdf = np.hypot(np.maximum(px, 0), np.maximum(py, 0)) + np.minimum(np.maximum(px, py), 0) - r
+    inside = np.clip(0.5 - sdf, 0, 1)
+    band = inside * np.clip(sdf + bw + 0.5, 0, 1)
+    alpha = glow_a * np.exp(-np.maximum(sdf, 0) / 4.5) * (1 - inside)
+    rgb = np.broadcast_to(_rgb(glow), (H, W, 3)).copy()
+    rgb, alpha = _over(rgb, alpha, _rgb(fill), inside * fill_a)
+    rgb, alpha = _over(rgb, alpha, _rgb(edge), band * edge_a)
+    return np.dstack([rgb[..., 2], rgb[..., 1], rgb[..., 0], alpha * 255]).clip(0, 255).astype(np.uint8)
+
+
+def panel_image(w, h, r, fill, fill_a, edge, edge_a, glow, glow_a):
+    """panel_rgba as a tk.PhotoImage (cached per look + size; callers keep a reference)."""
+    w, h = max(int(w), 8), max(int(h), 8)
+    key = (w, h, r, fill, fill_a, edge, edge_a, glow, glow_a)
+    hit = _panel_cache.get(key)
+    if hit is not None:
+        return hit
+    if len(_panel_cache) > 48:
+        _panel_cache.clear()
+    ok, buf = cv2.imencode(".png", panel_rgba(w, h, r, fill, fill_a, edge, edge_a, glow, glow_a),
+                           [cv2.IMWRITE_PNG_COMPRESSION, 1])
+    photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+    _panel_cache[key] = photo
+    return photo
+
+
+def make_background(accent, base, scene_path=None):
+    """The dashboard background (BGR array): the picture image/ymir_background.png when it exists,
+    otherwise a soft glow in the theme's accent colour."""
+    if scene_path and os.path.exists(scene_path):
+        img = _read_image(scene_path)
+        if img is not None:
+            solid = np.empty_like(img)
+            solid[:] = _rgb(base)[::-1].astype(np.uint8)
+            return cv2.addWeighted(img, 0.8, solid, 0.2, 0)
+    W, H = 1280, 800
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    xn, yn = xx / W, yy / H
+    glow = np.exp(-(((xn - 0.62) / 0.22) ** 2 + ((yn - 0.10) / 0.35) ** 2))
+    beam = np.exp(-(((xn - 0.60) / 0.045) ** 2)) * np.clip(1.0 - yn * 0.9, 0, 1)
+    g = np.clip(0.50 * glow + 0.22 * beam, 0, 0.8)[..., None]
+    light = _rgb(_mix(accent, "#ffffff", 0.35))
+    rgb = _rgb(base) * (1 - g) + light * g
+    vig = 1.0 - 0.35 * np.clip(((xn - 0.5) ** 2 + (yn - 0.5) ** 2) * 2.2, 0, 1)
+    rgb = rgb * vig[..., None]
+    return np.ascontiguousarray(rgb[..., ::-1].clip(0, 255).astype(np.uint8))
+
+
+class CText:
+    """A text on the dashboard canvas that answers like the tk.Label it replaces."""
+
+    def __init__(self, cv, text="", font=None, fill="#ffffff", anchor="nw", **kw):
+        self.cv = cv
+        self.text = text
+        self.id = cv.create_text(0, 0, text=text, font=font, fill=fill, anchor=anchor, **kw)
+
+    def configure(self, **kw):
+        opts = {}
+        if "text" in kw:
+            self.text = kw["text"]
+            opts["text"] = kw["text"]
+        if "fg" in kw:
+            opts["fill"] = kw["fg"]
+        if "font" in kw:
+            opts["font"] = kw["font"]
+        if "wraplength" in kw:
+            opts["width"] = kw["wraplength"]
+        if opts:
+            self.cv.itemconfigure(self.id, **opts)
+
+    config = configure
+
+    def cget(self, key):
+        if key == "text":
+            return self.text
+        if key in ("fg", "foreground"):
+            return self.cv.itemcget(self.id, "fill")
+        return self.cv.itemcget(self.id, key)
+
+    def at(self, x, y, anchor=None, width=None):
+        self.cv.coords(self.id, x, y)
+        opts = {}
+        if anchor:
+            opts["anchor"] = anchor
+        if width is not None:
+            opts["width"] = width
+        if opts:
+            self.cv.itemconfigure(self.id, **opts)
+
+    def show(self, on=True):
+        self.cv.itemconfigure(self.id, state="normal" if on else "hidden")
+
+    def bind(self, seq, fn):
+        self.cv.tag_bind(self.id, seq, fn)
+
+
+class CImage:
+    """A picture on the dashboard canvas (the loot icons), centred on its point."""
+
+    def __init__(self, cv):
+        self.cv = cv
+        self.size = 20
+        self.id = cv.create_image(0, 0, anchor="center")
+
+    def configure(self, image=None, **_kw):
+        if image is not None:
+            self.size = image.width()
+            self.cv.itemconfigure(self.id, image=image)
+
+    config = configure
+
+    def at(self, x, y):
+        self.cv.coords(self.id, x, y)
+
+    def show(self, on=True):
+        self.cv.itemconfigure(self.id, state="normal" if on else "hidden")
+
+
+class CPill:
+    """The status badge (Idle / Running ...) drawn on the dashboard canvas."""
+
+    def __init__(self, cv):
+        self.cv = cv
+        self.rect = None
+        self.state = None
+
+    def place(self, x1, y1, x2, y2):
+        self.rect = (x1, y1, x2, y2)
+        self.draw()
+
+    def update_pill(self, text, bg, fg):
+        self.state = (text, bg, fg)
+        self.draw()
+
+    def draw(self):
+        if self.rect is None or self.state is None:
+            return
+        cv = self.cv
+        cv.delete("pill")
+        x1, y1, x2, y2 = self.rect
+        text, bg, fg = self.state
+        h = y2 - y1
+        rounded_rect(cv, x1, y1, x2, y2, h // 2 if App.R_PILL is None else App.R_PILL,
+                     fill=bg, outline=_mix(bg, fg, 0.45), width=1, tags=("pill",))
+        cy = (y1 + y2) / 2
+        cv.create_oval(x1 + 16 - 4, cy - 4, x1 + 16 + 4, cy + 4, fill=fg, outline="", tags=("pill",))
+        cv.create_text(x1 + 30, cy, text=text, fill=fg, anchor="w",
+                       font=(App.FONT, 10, "bold"), tags=("pill",))
+
+
+class CStepper:
+    """The row of mission-step segments (same look as Stepper, drawn on the dashboard canvas)."""
+
+    def __init__(self, cv, n_segments, colors):
+        self.cv = cv
+        self.n_segments = n_segments
+        self.seg_colors = colors      # (done, current, pending)
+        self.current = -1
+        self.x = self.y = self.w = 0
+
+    def place(self, x, y, w):
+        self.x, self.y, self.w = x, y, w
+        self.draw()
+
+    def set_index(self, idx):
+        self.current = idx
+        self.draw()
+
+    def set_count(self, n):
+        self.n_segments = n
+        self.draw()
+
+    def draw(self):
+        if self.w <= 0:
+            return
+        cv = self.cv
+        cv.delete("dstep")
+        gap = 5
+        seg = (self.w - gap * (self.n_segments - 1)) / self.n_segments
+        done, cur, pending = self.seg_colors
+        for i in range(self.n_segments):
+            x1 = self.x + i * (seg + gap)
+            col = pending if (self.current < 0 or i > self.current) else (done if i < self.current else cur)
+            rounded_rect(cv, x1, self.y, x1 + seg, self.y + 6, App.R_SEG, fill=col, outline="",
+                         tags=("dstep",))
+
+
+class CTile:
+    """Start / Pause / Stop tile: a translucent glowing panel with icon, hotkey badge and label.
+    Same methods as ActionTile (update_tile), drawn on the dashboard canvas."""
+
+    def __init__(self, cv, label, key_text, icon, icon_color, on_click, tag):
+        self.cv = cv
+        self.label_text = label
+        self.key_text = key_text
+        self.icon = icon
+        self.icon_color = icon_color
+        self.on_click = on_click
+        self.tag = tag
+        self.enabled = True
+        self.active = False
+        self.hovering = False
+        self.pressed = False
+        self.x = self.y = self.w = self.h = 0
+        self._img = None
+        cv.tag_bind(tag, "<Enter>", self._on_enter)
+        cv.tag_bind(tag, "<Leave>", self._on_leave)
+        cv.tag_bind(tag, "<ButtonPress-1>", self._on_press)
+        cv.tag_bind(tag, "<ButtonRelease-1>", self._on_release)
+
+    def place(self, x, y, w, h):
+        self.x, self.y, self.w, self.h = x, y, w, h
+        self.draw()
+
+    def _inside(self, e):
+        return self.x <= e.x <= self.x + self.w and self.y <= e.y <= self.y + self.h
+
+    def draw(self):
+        if self.w <= 0:
+            return
+        cv, t = self.cv, (self.tag,)
+        cv.delete(self.tag)
+        glow = _mix(App.CARD, App.ACCENT, 0.38)       # same as App.GLOW (a property of the instance)
+        if not self.enabled:
+            kind, spec = "disabled", (App.DIS_FILL, 0.45, App.DIS_EDGE, 0.8, 0.0)
+        elif self.active:
+            kind, spec = "active", (App.ACCENT_BG, 0.85, App.ACCENT, 1.0, 0.45)
+        elif self.hovering:
+            kind, spec = "hover", (App.FIELD_HOVER, 0.72, _mix(glow, App.ACCENT, 0.4), 1.0, 0.35)
+        else:
+            kind, spec = "normal", (App.FIELD, 0.58, glow, 0.95, 0.25)
+        look = ActionTile.LOOK[kind]
+        label_fg, badge_line, badge_fg = look[3], look[4], look[5]
+        fill, fa, edge, ea, ga = spec
+        self._img = panel_image(self.w, self.h, max(6, App.R_TILE), fill, fa, edge, ea, App.ACCENT, ga)
+        cv.create_image(self.x - PANEL_PAD, self.y - PANEL_PAD, image=self._img, anchor="nw", tags=t)
+        color = self.icon_color if self.enabled else ActionTile.OFF_ICON
+        self._draw_icon(self.x + 26, self.y + 26, color)
+        bx2, by1 = self.x + self.w - 14, self.y + 12
+        bx1 = bx2 - max(30, 8 * len(self.key_text) + 14)
+        rounded_rect(cv, bx1, by1, bx2, by1 + 18, min(5, App.R_TILE), fill="", outline=badge_line,
+                     width=1, tags=t)
+        cv.create_text((bx1 + bx2) / 2, by1 + 9, text=self.key_text, fill=badge_fg,
+                       font=(App.FONT, 8, "bold"), tags=t)
+        cv.create_text(self.x + 18, self.y + self.h - 16, text=self.label_text, fill=label_fg,
+                       anchor="w", font=(App.FONT, 11, "bold"), tags=t)
+
+    def _draw_icon(self, cx, cy, color):
+        cv, t = self.cv, (self.tag,)
+        if self.icon == "play":
+            cv.create_polygon(cx - 5, cy - 8, cx - 5, cy + 8, cx + 8, cy, fill=color, outline=color,
+                              width=2, joinstyle="round", tags=t)
+        elif self.icon == "pause":
+            for dx in (-6, 2):
+                rounded_rect(cv, cx + dx, cy - 8, cx + dx + 5, cy + 8, 1.5, fill=color, outline="",
+                             tags=t)
+        elif self.icon == "stop":
+            rounded_rect(cv, cx - 7, cy - 7, cx + 7, cy + 7, min(3, App.R_TILE), fill=color,
+                         outline="", tags=t)
+
+    def update_tile(self, label=None, enabled=None, active=None, key_text=None):
+        if label is not None:
+            self.label_text = label
+        if key_text is not None:
+            self.key_text = key_text
+        if enabled is not None:
+            self.enabled = enabled
+        if active is not None:
+            self.active = active
+        self.draw()
+
+    def _on_enter(self, _e):
+        if self.hovering:
+            return
+        self.hovering = True
+        self.cv.configure(cursor="hand2" if self.enabled else "arrow")
+        self.draw()
+
+    def _on_leave(self, e):
+        if self._inside(e) or not self.hovering:
+            return                      # still on the tile (redrawing it fires Leave / Enter)
+        self.hovering = False
+        self.pressed = False
+        self.cv.configure(cursor="")
+        self.draw()
+
+    def _on_press(self, _e):
+        self.pressed = True
+
+    def _on_release(self, e):
+        was_pressed, self.pressed = self.pressed, False
+        if was_pressed and self.enabled and self.on_click and self._inside(e):
+            self.on_click()
+
+
 def prepare_window(win):
     """First line of a window's __init__: invisible AND hidden while it is being built, so nothing
     of it can show (the default white window background, a half-built layout, the light title
@@ -6763,8 +7088,8 @@ class App:
         except (tk.TclError, OSError):
             pass  # no icon file: keep the default window icon
         root.configure(bg=self.BG)
-        root.geometry("430x720+20+20")  # top-left, away from the game's HUD/buttons
-        root.minsize(400, 660)
+        root.geometry("900x640+20+20")  # top-left, away from the game's HUD/buttons
+        root.minsize(640, 600)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         try:
@@ -6778,12 +7103,12 @@ class App:
         # size the window to what the content really needs (fonts get bigger with
         # Windows display scaling), so nothing is cut off when it opens
         root.update_idletasks()
-        w = max(430, root.winfo_reqwidth())
-        h = max(720, root.winfo_reqheight())
-        min_h = max(560, h - 160)
+        w = max(900, root.winfo_reqwidth())
+        h = max(640, root.winfo_reqheight())
+        min_h = 600
         w, h, x, y = self.restore_geometry(w, h, min_h)   # last size / spot (default: top-left)
         root.geometry(f"{w}x{h}+{x}+{y}")
-        root.minsize(400, min_h)
+        root.minsize(640, 600)
         style_title_bar(root, self.BG)
         reveal_window(root)
         root.bind("<Configure>", self.on_configure)       # remember moves / resizes
@@ -6804,13 +7129,29 @@ class App:
 
     def build_ui(self):
         self.apply_styles()
+        cv = self.cv = tk.Canvas(self.root, width=900, height=640, bg=self.BG,
+                                 highlightthickness=0, bd=0)
+        cv.pack(fill="both", expand=True)
+        self._imgs = {}                 # panel pictures kept alive
+        self._bg_size = None
+        self._bg_photo = None
+        self.bg_arr = None
+        self._layout_job = None
+        # background: image/ymir_background.png if you put one there, otherwise a soft glow
+        self.bg_src = make_background(self.ACCENT, self.BG, asset_path(BACKGROUND_FILE))
+        self.bg_item = cv.create_image(0, 0, anchor="nw")
+        self.panels = {n: cv.create_image(0, 0, anchor="nw")
+                       for n in ("side", "nav", "navset", "now", "stats", "loot", "log")}
+        self.build_sidebar()
         self.build_header()
         self.build_now()
         self.build_stats()
         self.build_loot()
-        self.build_footer()    # bottom-packed first, so these two never get cut off
+        self.build_log()
         self.build_controls()
-        self.build_log()       # the log takes whatever space is left
+        self.build_footer()
+        cv.bind("<Configure>", self.schedule_layout)
+        cv.after_idle(self.layout)
 
     def set_theme(self, name):
         apply_theme(name)
@@ -6884,97 +7225,288 @@ class App:
             pass
         self.keep_settings_on_top()      # (debounced: one single lift, no flicker)
 
-    # ----- layout helpers -----
-    def card(self, title=None, expand=False, pad=(18, 14)):
-        outer = tk.Frame(self.root, bg=self.CARD, highlightbackground=self.BORDER,
-                         highlightthickness=self.CARD_BW)
-        outer.pack(fill="both" if expand else "x", expand=expand, padx=16, pady=6)
-        inner = tk.Frame(outer, bg=self.CARD)
-        inner.pack(fill="both", expand=True, padx=pad[0], pady=pad[1])
-        if title:
-            tk.Label(inner, text=title, font=(App.FONT, 8, "bold"), fg=self.SUB,
-                     bg=self.CARD, anchor="w").pack(fill="x", pady=(0, 10))
-        return inner
+    # ----- layout: one canvas, translucent panels over the background picture -----
+    SB_W = 196                      # sidebar width
+
+    @property
+    def GLOW(self):
+        """Soft blue outline of the cards (the lit edge)."""
+        return _mix(self.CARD, self.ACCENT, 0.38)
+
+    def serif(self):
+        return _font_or("Georgia", self.FONT)
+
+    def load_logo(self, width):
+        """The logo picture scaled to `width` px (None if the file is missing)."""
+        try:
+            path = asset_path(LOGO_FILE)
+            key = ("logo2", path, width, os.path.getmtime(path))
+            if key in _icon_cache:
+                return _icon_cache[key]
+            img = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_UNCHANGED)
+            h = max(1, round(img.shape[0] * width / img.shape[1]))
+            img = cv2.resize(img, (width, h), interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".png", img)
+            photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes())) if ok else None
+            if photo is not None:
+                _icon_cache[key] = photo
+            return photo
+        except Exception:  # noqa: BLE001
+            return None
+
+    def build_sidebar(self):
+        cv = self.cv
+        self.side_line = cv.create_line(0, 0, 0, 0, fill=self.GLOW)
+        self.logo_photo = self.load_logo(150)
+        self.logo_item = cv.create_image(0, 0, anchor="n")
+        self.logo_fallback = CText(cv, "ymir", (self.serif(), 24, "bold"), self.TEXT, "n")
+        if self.logo_photo is not None:
+            cv.itemconfigure(self.logo_item, image=self.logo_photo)
+            self.logo_fallback.show(False)
+        self.nav_hover = False
+        self.nav_set_rect = (0, 0, 0, 0)
+        self.nav_dash = CText(cv, "\u2302   Dashboard", (self.FONT, 11), self.TEXT, "w")
+        self.nav_set = CText(cv, "\u2699   Settings", (self.FONT, 11), self.SUB, "w")
+        for item in (self.panels["navset"], self.nav_set.id):
+            cv.tag_bind(item, "<Button-1>", lambda _e: self.open_settings())
+            cv.tag_bind(item, "<Enter>", lambda _e: self.set_nav_hover(True))
+            cv.tag_bind(item, "<Leave>", self.nav_leave)
+        self.side_rule = cv.create_line(0, 0, 0, 0, fill=self.BORDER)
+        self.side_note = CText(cv, "All paths\nare connected.", (self.serif(), 10, "italic"),
+                               self.SUB, "s", justify="center")
+
+    def set_nav_hover(self, on):
+        if on == self.nav_hover:
+            return
+        self.nav_hover = on
+        self.cv.configure(cursor="hand2" if on else "")
+        self.nav_set.configure(fg=self.TEXT if on else self.SUB)
+        self.schedule_layout()
+
+    def nav_leave(self, e):
+        x, y, w, h = self.nav_set_rect
+        if x <= e.x <= x + w and y <= e.y <= y + h:
+            return                      # still over the button (text <-> panel)
+        self.set_nav_hover(False)
 
     def build_header(self):
-        head = tk.Frame(self.root, bg=self.BG)
-        head.pack(fill="x", padx=18, pady=(16, 8))
-        self.logo_img = None  # keep a reference, or tkinter drops the image
-        try:
-            logo_path = asset_path(LOGO_FILE)
-            stamp = (logo_path, os.path.getmtime(logo_path))
-            if _icon_cache.get("logo_stamp") != stamp or "logo" not in _icon_cache:
-                _icon_cache["logo"] = tk.PhotoImage(file=logo_path)     # decoded once, not on every rebuild
-                _icon_cache["logo_stamp"] = stamp
-            self.logo_img = _icon_cache["logo"]
-        except (tk.TclError, OSError):
-            pass
-        if self.logo_img:
-            tk.Label(head, image=self.logo_img, bg=self.BG, bd=0).pack(side="left")
-        else:
-            tk.Label(head, text="ymir", font=(App.FONT, 16, "bold"),
-                     fg=self.TEXT, bg=self.BG).pack(side="left")
-        self.pill = Pill(head, self.BG)
-        self.pill.pack(side="right")
+        cv = self.cv
+        self.title_text = CText(cv, "Welcome back,", (self.serif(), 26), self.TEXT, "nw")
+        self.sub_text = CText(cv, "May the paths guide you...", (self.serif(), 12, "italic"),
+                              self.SUB, "nw")
+        self.pill = CPill(cv)
 
     def build_controls(self):
-        row = tk.Frame(self.root, bg=self.BG)
-        row.pack(side="bottom", fill="x", padx=16, pady=(5, 5))
-        for col in range(3):
-            row.columnconfigure(col, weight=1, uniform="tiles")
-
-        self.btn_start = ActionTile(row, "Start", START_KEY.upper(), "play",
-                                    self.ACCENT, lambda: start_macro(), self.BG)
-        self.btn_pause = ActionTile(row, "Pause", PAUSE_KEY.upper(), "pause",
-                                    "#f5b942", toggle_pause, self.BG)
-        self.btn_stop = ActionTile(row, "Stop", QUIT_KEY.upper(), "stop",
-                                   "#ef5350", request_stop, self.BG)
-        for col, tile in enumerate((self.btn_start, self.btn_pause, self.btn_stop)):
-            tile.grid(row=0, column=col, sticky="ew",
-                      padx=(0 if col == 0 else 4, 0 if col == 2 else 4))
+        cv = self.cv
+        self.btn_start = CTile(cv, "Start", START_KEY.upper(), "play", self.ACCENT,
+                               lambda: start_macro(), "tile_start")
+        self.btn_pause = CTile(cv, "Pause", PAUSE_KEY.upper(), "pause", "#f5b942",
+                               toggle_pause, "tile_pause")
+        self.btn_stop = CTile(cv, "Stop", QUIT_KEY.upper(), "stop", "#ef5350",
+                              request_stop, "tile_stop")
 
     def build_now(self):
-        c = self.card()
-        top = tk.Frame(c, bg=self.CARD)
-        top.pack(fill="x")
-        self.now_title = tk.Label(top, text="Not running", font=(App.FONT, 16, "bold"),
-                                  fg=self.TEXT, bg=self.CARD, anchor="w")
-        self.now_title.pack(side="left")
-        self.step_count = tk.Label(top, text="", font=(App.FONT, 9),
-                                   fg=self.SUB, bg=self.CARD)
-        self.step_count.pack(side="right")
-        self.now_detail = tk.Label(c, text=self.idle_hint(), font=(App.FONT, 10),
-                                   fg=self.SUB, bg=self.CARD, anchor="w",
-                                   justify="left", wraplength=360)
-        self.now_detail.pack(fill="x", pady=(2, 12))
-        self.stepper = Stepper(c, len(step_names()), self.CARD,
-                               (self.STEP_DONE, self.ACCENT_SOFT, self.STEP_PENDING))
-        self.stepper.pack(fill="x")
+        cv = self.cv
+        self.now_title = CText(cv, "Not running", (App.FONT, 15, "bold"), self.TEXT, "nw")
+        self.step_count = CText(cv, "", (App.FONT, 9), self.SUB, "ne")
+        self.now_detail = CText(cv, self.idle_hint(), (App.FONT, 10), self.SUB, "nw")
+        self.stepper = CStepper(cv, len(step_names()),
+                                (self.STEP_DONE, self.ACCENT_SOFT, self.STEP_PENDING))
 
     def build_stats(self):
-        c = self.card()
-        row = tk.Frame(c, bg=self.CARD)
-        row.pack(fill="x")
+        cv = self.cv
         self.stat_labels = {}
         self.stat_captions = {}
+        self.stat_keys = ("missions", "completed", "failed", "mission_time", "run_time")
         items = (("missions", ui_word("missions")), ("completed", "Completed"),
                  ("failed", "Failed"), ("mission_time", ui_word("mission_time")),
                  ("run_time", "Run time"))
         colors = {"completed": "#34d399", "failed": "#f87171"}
-        for i, (key, caption) in enumerate(items):
-            if i:
-                tk.Frame(row, width=1, bg=self.BORDER).pack(side="left", fill="y", pady=2)
-            box = tk.Frame(row, bg=self.CARD)
-            box.pack(side="left", expand=True, fill="x")
-            val = tk.Label(box, text="--:--" if key.endswith("_time") else "0",
-                           font=(App.FONT, 16, "bold"),
-                           fg=colors.get(key, self.TEXT), bg=self.CARD)
-            val.pack()
-            cap = tk.Label(box, text=caption.upper(), font=(App.FONT, 7, "bold"), fg=self.SUB,
-                           bg=self.CARD)
-            cap.pack(pady=(1, 0))
-            self.stat_captions[key] = cap
-            self.stat_labels[key] = val
+        for key, caption in items:
+            self.stat_labels[key] = CText(
+                cv, "--:--" if key.endswith("_time") else "0", (App.FONT, 20, "bold"),
+                colors.get(key, self.TEXT), "center")
+            self.stat_captions[key] = CText(cv, caption.upper(), (App.FONT, 7, "bold"),
+                                            self.SUB, "center")
+        self.stat_div = [cv.create_line(0, 0, 0, 0, fill=self.BORDER) for _ in range(4)]
+
+    def put_panel(self, name, x, y, w, h, r=16, fill=None, fa=0.58, edge=None, ea=0.95,
+                  glow=None, ga=0.28):
+        item = self.panels[name]
+        img = panel_image(w, h, r, fill or self.CARD, fa, edge or self.GLOW, ea,
+                          glow or self.ACCENT, ga)
+        self._imgs[name] = img          # tk drops a picture nobody holds
+        self.cv.itemconfigure(item, image=img)
+        self.cv.coords(item, x - PANEL_PAD, y - PANEL_PAD)
+
+    def schedule_layout(self, _e=None):
+        if self._layout_job is None:
+            try:
+                self._layout_job = self.cv.after(12, self.layout)
+            except tk.TclError:
+                pass
+
+    def set_background(self, w, h):
+        if self._bg_size == (w, h):
+            return
+        self._bg_size = (w, h)
+        src = self.bg_src
+        sh, sw = src.shape[:2]
+        sc = max(w / sw, h / sh)        # "cover": fill the window, crop the overflow
+        nw, nh = max(w, int(sw * sc + 0.999)), max(h, int(sh * sc + 0.999))
+        big = cv2.resize(src, (nw, nh),
+                         interpolation=cv2.INTER_AREA if sc < 1 else cv2.INTER_LINEAR)
+        ox, oy = (nw - w) // 2, (nh - h) // 2
+        crop = np.ascontiguousarray(big[oy:oy + h, ox:ox + w])
+        self.bg_arr = crop
+        try:
+            photo = tk.PhotoImage(data=b"P6 %d %d 255\n" % (w, h) + crop[..., ::-1].tobytes())
+        except Exception:  # noqa: BLE001  (no PPM support: slower PNG instead)
+            ok, buf = cv2.imencode(".png", crop, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+            photo = tk.PhotoImage(data=base64.b64encode(buf.tobytes()))
+        self._bg_photo = photo
+        self.cv.itemconfigure(self.bg_item, image=photo)
+        self.cv.coords(self.bg_item, 0, 0)
+
+    def bg_color_at(self, x, y):
+        a = self.bg_arr
+        if a is None:
+            return self.BG
+        h, w = a.shape[:2]
+        b, g, r = (int(v) for v in a[min(max(int(y), 0), h - 1), min(max(int(x), 0), w - 1)])
+        return "#%02x%02x%02x" % (r, g, b)
+
+    def put_cell(self, key, cx, vy, cy):
+        """One loot counter: [icon] value on the line vy, caption (with its colour dot) on cy."""
+        c = self.loot_cells[key]
+        if c["icon"] is not None:
+            ix = cx - 34
+            c["icon"].at(ix, vy)
+            c["val"].at(ix + c["icon"].size / 2 + 8, vy, "w")
+        else:
+            c["val"].at(cx, vy, "center")
+        if c["dot"] is not None:
+            c["cap"].at(cx + 5, cy, "center")
+            c["dot"].at(cx + 5 - c["width"] / 2 - 8, cy, "center")
+        else:
+            c["cap"].at(cx, cy, "center")
+
+    def layout(self):
+        """Place everything for the current window size. Returns the activity card's height."""
+        self._layout_job = None
+        cv = self.cv
+        try:
+            w, h = cv.winfo_width(), cv.winfo_height()
+        except tk.TclError:
+            return 0
+        if w < 100 or h < 100:
+            return 0
+        self.set_background(w, h)
+        SB = self.SB_W
+        x0, x1 = SB + 26, w - 26
+        cw = x1 - x0
+        gap = 10
+
+        # sidebar
+        self.put_panel("side", 0, 0, SB, h, 0, fill=_mix(self.BG, "#000000", 0.35), fa=0.55,
+                       ea=0.0, ga=0.0)
+        cv.coords(self.side_line, SB, 0, SB, h)
+        if self.logo_photo is not None:
+            cv.coords(self.logo_item, SB / 2, 22)
+            logo_h = self.logo_photo.height()
+        else:
+            self.logo_fallback.at(SB / 2, 22)
+            logo_h = 40
+        ny = 22 + logo_h + 26
+        self.put_panel("nav", 12, ny, SB - 24, 42, 12, fill=self.ACCENT_BG, fa=0.85,
+                       edge=self.ACCENT, ea=0.9, ga=0.35)
+        self.nav_dash.at(30, ny + 21)
+        sy = ny + 50
+        self.nav_set_rect = (12, sy, SB - 24, 42)
+        self.put_panel("navset", 12, sy, SB - 24, 42, 12, fill=self.FIELD,
+                       fa=0.5 if self.nav_hover else 0.0, ea=0.0, ga=0.0)
+        self.nav_set.at(30, sy + 21)
+        cv.coords(self.side_rule, 18, h - 86, SB - 18, h - 86)
+        self.side_note.at(SB / 2, h - 22)
+
+        # header
+        self.title_text.at(x0, 16)
+        self.sub_text.at(x0, 58)
+        self.pill.place(x1 - 118, 24, x1, 56)
+
+        # "now" card
+        y, hh = 96, 80
+        self.put_panel("now", x0, y, cw, hh)
+        self.now_title.at(x0 + 20, y + 12)
+        self.step_count.at(x1 - 20, y + 16)
+        self.now_detail.at(x0 + 20, y + 38, width=cw - 40)
+        self.stepper.place(x0 + 20, y + hh - 18, cw - 40)
+
+        # stats card
+        y += hh + gap
+        self.put_panel("stats", x0, y, cw, hh)
+        col = (cw - 20) / 5
+        for i, key in enumerate(self.stat_keys):
+            cx = x0 + 10 + col * (i + 0.5)
+            self.stat_labels[key].at(cx, y + 33)
+            self.stat_captions[key].at(cx, y + 59)
+        for i, line in enumerate(self.stat_div):
+            lx = x0 + 10 + col * (i + 1)
+            cv.coords(line, lx, y + 16, lx, y + hh - 16)
+
+        # loot card (+ the Details rows)
+        y += hh + gap
+        open_ = App.frag_open
+        loot_h = 80 + (104 if open_ else 0)
+        self.put_panel("loot", x0, y, cw, loot_h)
+        col = (cw - 20) / 3
+        for i, key in enumerate(("scrolls", "fragments", "serums")):
+            self.put_cell(key, x0 + 10 + col * (i + 0.5), y + 28, y + 52)
+        for i, line in enumerate(self.loot_div):
+            lx = x0 + 10 + col * (i + 1)
+            cv.coords(line, lx, y + 14, lx, y + 60)
+        self.frag_toggle.at(x0 + cw / 2, y + 68, "center")
+        for key, c in self.loot_cells.items():
+            if c["detail"]:
+                for part in ("val", "cap", "dot", "icon"):
+                    if c[part] is not None:
+                        c[part].show(open_)
+        cv.itemconfigure(self.frag_line, state="normal" if open_ else "hidden")
+        if open_:
+            n = len(self.LOOT_CHIPS)
+            for i, (key, _c, _col) in enumerate(self.LOOT_CHIPS):
+                self.put_cell(key, x0 + 10 + (cw - 20) / n * (i + 0.5), y + 100, y + 120)
+            cv.coords(self.frag_line, x0 + 20, y + 134, x1 - 20, y + 134)
+            n = len(self.SERUM_CHIPS)
+            for i, (key, _c, _col) in enumerate(self.SERUM_CHIPS):
+                self.put_cell(key, x0 + 10 + (cw - 20) / n * (i + 0.5), y + 150, y + 170)
+
+        # activity card (takes what is left)
+        y += loot_h + gap
+        ctrl_y = h - 36 - 62
+        log_h = ctrl_y - gap - y
+        card_h = max(log_h, 90)
+        self.put_panel("log", x0, y, cw, card_h)
+        cv.coords(self.log_bar, x0 + 20, y + 15, x0 + 23, y + 31)
+        self.log_title.at(x0 + 32, y + 12)
+        cv.coords(self.log_win, x0 + 16, y + 42)
+        cv.itemconfigure(self.log_win, width=cw - 32, height=max(30, card_h - 58))
+
+        # Start / Pause / Stop
+        tgap = 12
+        tw = (cw - 2 * tgap) / 3
+        for i, tile in enumerate((self.btn_start, self.btn_pause, self.btn_stop)):
+            tile.place(x0 + i * (tw + tgap), ctrl_y, tw, 62)
+
+        # footer
+        fy = h - 20
+        cv.coords(self.sw_win, x0, fy)
+        self.sw.configure(bg=self.bg_color_at(x0 + 19, fy))
+        self.ontop_lbl.at(x0 + 48, fy, "w")
+        self.ver_lbl.at(x0 + 48 + 108, fy, "w")
+        self.upd_lbl.at(x0 + 48 + 108 + 70, fy, "w")
+        self.reset_btn.at(x1, fy, "e")
+        return log_h
 
     LOOT_CHIPS = (("body", "Body", "#fbbf24"), ("defence", "Defence", "#60a5fa"),
                   ("offence", "Offence", "#f87171"), ("support", "Support", "#34d399"))
@@ -6983,88 +7515,67 @@ class App:
                    ("colossal_serum", "Colossal", "#f87171"))
 
     def build_loot(self):
-        c = self.card(pad=(10, 10))
+        cv = self.cv
         self.loot_labels = {}
         self.loot_captions = {}
-        self.loot_icon_labels = {}      # key -> the icon label (so Scrolls <-> Vessels can swap it)
+        self.loot_icon_labels = {}      # key -> the icon (so Scrolls <-> Vessels can swap it)
+        self.loot_cells = {}
         # the Discord emoji pictures (image/emoji_*.png), same ones as the mini bar; a picture
         # that is missing is just left out
-        px = max(18, round(20 * max(1.0, self.root.winfo_fpixels("1i") / 96)))
+        px = max(18, round(22 * max(1.0, self.root.winfo_fpixels("1i") / 96)))
         self.loot_imgs = {name: emoji_icon(f"emoji_{name}.png", px)
                           for name in ("scroll", "vessel", "fragments", "serums")}
-        raid = raid_counting()
-        top_icons = {"scrolls": "vessel" if raid else "scroll", "fragments": "fragments",
-                     "serums": "serums"}
+        top_icons = {"scrolls": "vessel" if raid_counting() else "scroll",
+                     "fragments": "fragments", "serums": "serums"}
+        cap_font = tkfont.Font(family=App.FONT, size=7, weight="bold")
 
-        def counter(parent, col, key, caption, color=None, size=15):
-            parent.columnconfigure(col, weight=1, uniform=f"loot_{id(parent)}")
-            box = tk.Frame(parent, bg=self.CARD)
-            box.grid(row=0, column=col, sticky="ew")
-            line = tk.Frame(box, bg=self.CARD)
-            line.pack()
+        def cell(key, caption, color=None, size=15, detail=False):
             img = self.loot_imgs.get(top_icons.get(key))
+            icon = None
             if img is not None:
-                ic = tk.Label(line, image=img, bg=self.CARD, bd=0)
-                ic.pack(side="left", padx=(0, 5))
-                self.loot_icon_labels[key] = ic
-            val = tk.Label(line, text="0", font=(App.FONT, size, "bold"),
-                           fg=self.TEXT, bg=self.CARD)
-            val.pack(side="left")
-            cap = tk.Frame(box, bg=self.CARD)
-            cap.pack()
-            if color:
-                tk.Label(cap, text="\u25cf", font=(App.FONT, 7), fg=color,
-                         bg=self.CARD).pack(side="left", padx=(0, 4))
-            name = tk.Label(cap, text=caption.upper(), font=(App.FONT, 7, "bold"), fg=self.SUB,
-                            bg=self.CARD)
-            name.pack(side="left")
+                icon = CImage(cv)
+                icon.configure(image=img)
+                self.loot_icon_labels[key] = icon
+            val = CText(cv, "0", (App.FONT, size, "bold"), self.TEXT, "w" if icon else "center")
+            cap = CText(cv, caption.upper(), (App.FONT, 7, "bold"), self.SUB, "center")
+            dot = CText(cv, "\u25cf", (App.FONT, 7), color, "center") if color else None
             self.loot_labels[key] = val
-            self.loot_captions[key] = name
-
-        def ridge(parent, col):
-            """A thin vertical divider between two counters."""
-            tk.Frame(parent, bg=self.BORDER, width=1).grid(row=0, column=col, sticky="ns", pady=2)
+            self.loot_captions[key] = cap
+            self.loot_cells[key] = dict(icon=icon, val=val, cap=cap, dot=dot, detail=detail,
+                                        width=cap_font.measure(caption.upper()))
 
         # Scrolls (Vessels for Female Raid) | Fragments (all four kinds) | Serums (all five kinds)
-        top = tk.Frame(c, bg=self.CARD)
-        top.pack(fill="x")
-        counter(top, 0, "scrolls", ui_word("scrolls"))
-        ridge(top, 1)
-        counter(top, 2, "fragments", "Fragments")
-        ridge(top, 3)
-        counter(top, 4, "serums", "Serums")
+        cell("scrolls", ui_word("scrolls"))
+        cell("fragments", "Fragments")
+        cell("serums", "Serums")
+        self.loot_div = [cv.create_line(0, 0, 0, 0, fill=self.BORDER) for _ in range(2)]
 
-        # "Details" section: the fragment types, a ridge, then the serum types; opened / closed
-        # with the line above it
-        self.frag_toggle = tk.Label(c, text="", font=(App.FONT, 8), fg=self.SUB, bg=self.CARD,
-                                    cursor="hand2")
-        self.frag_toggle.pack(pady=(6, 0))
+        # "Details": the fragment types, a ridge, then the serum types
+        self.frag_toggle = CText(cv, "", (App.FONT, 8), self.SUB, "center")
         self.frag_toggle.bind("<Button-1>", self.toggle_fragments)
-        self.frag_toggle.bind("<Enter>", lambda _e: self.frag_toggle.configure(fg=self.TEXT))
-        self.frag_toggle.bind("<Leave>", lambda _e: self.frag_toggle.configure(fg=self.SUB))
-        self.frag_frame = tk.Frame(c, bg=self.CARD)
-        frag_row = tk.Frame(self.frag_frame, bg=self.CARD)
-        frag_row.pack(fill="x")
-        for n, (key, caption, color) in enumerate(self.LOOT_CHIPS):
-            counter(frag_row, n, key, caption, color, size=13)
-        tk.Frame(self.frag_frame, bg=self.BORDER, height=1).pack(fill="x", pady=6)
-        serum_row = tk.Frame(self.frag_frame, bg=self.CARD)
-        serum_row.pack(fill="x")
-        for n, (key, caption, color) in enumerate(self.SERUM_CHIPS):
-            counter(serum_row, n, key, caption, color, size=13)
+        self.frag_toggle.bind("<Enter>", lambda _e: (self.cv.configure(cursor="hand2"),
+                                                     self.frag_toggle.configure(fg=self.TEXT)))
+        self.frag_toggle.bind("<Leave>", lambda _e: (self.cv.configure(cursor=""),
+                                                     self.frag_toggle.configure(fg=self.SUB)))
+        self.frag_line = cv.create_line(0, 0, 0, 0, fill=self.BORDER)
+        for key, caption, color in self.LOOT_CHIPS:
+            cell(key, caption, color, size=13, detail=True)
+        for key, caption, color in self.SERUM_CHIPS:
+            cell(key, caption, color, size=13, detail=True)
         self.apply_fragments()
 
     def toggle_fragments(self, _e=None):
         App.frag_open = not App.frag_open
         self.apply_fragments()
+        log_h = self.layout()
+        if App.frag_open and 0 < log_h < 110:       # keep the activity log usable
+            r = self.root
+            r.geometry(f"{r.winfo_width()}x{r.winfo_height() + 110 - log_h}")
 
     def apply_fragments(self):
-        if App.frag_open:
-            self.frag_frame.pack(fill="x", pady=(6, 0))
-        else:
-            self.frag_frame.pack_forget()
         self.frag_toggle.configure(
             text=("\u25be" if App.frag_open else "\u25b8") + "  Details")
+        self.schedule_layout()
 
     def refresh_labels(self):
         """The config was changed in Settings: Missions / Mission time / Scrolls <-> Raids / Raid time / Vessels."""
@@ -7118,9 +7629,10 @@ class App:
         self.reset_btn.configure(text="Reset stats", fg=self.SUB)
 
     def build_log(self):
-        c = self.card("ACTIVITY", expand=True)
-        wrap = tk.Frame(c, bg=self.LOGBG)
-        wrap.pack(fill="both", expand=True)
+        cv = self.cv
+        self.log_bar = cv.create_rectangle(0, 0, 0, 0, fill=self.ACCENT, outline="")
+        self.log_title = CText(cv, "Activity", (self.serif(), 13), self.TEXT, "nw")
+        wrap = tk.Frame(cv, bg=self.LOGBG)
         self.log_text = tk.Text(wrap, height=8, bg=self.LOGBG, fg=self.TEXT, bd=0,
                                 highlightthickness=0, font=(App.MONO, 9),
                                 wrap="word", state="disabled", padx=10, pady=8,
@@ -7133,6 +7645,7 @@ class App:
         self.log_text.tag_configure("err", foreground="#f87171")
         self.log_text.tag_configure("good", foreground="#34d399")
         self.log_text.tag_configure("info", foreground=self.ACCENT_SOFT)
+        self.log_win = cv.create_window(0, 0, window=wrap, anchor="nw")
 
     def keep_settings_on_top(self, _event=None):
         """The settings window stays above the main window, even when that one is always on top."""
@@ -7161,42 +7674,26 @@ class App:
         save_stats()
 
     def build_footer(self):
-        foot = tk.Frame(self.root, bg=self.BG)
-        foot.pack(side="bottom", fill="x", padx=18, pady=(4, 12))
+        cv = self.cv
         self.topmost = tk.BooleanVar(value=bool(settings.get("always_on_top")))
         self.root.attributes("-topmost", self.topmost.get())     # restore the saved state
-        left = tk.Frame(foot, bg=self.BG)
-        left.pack(side="left")
-        sw = ToggleSwitch(left, self.topmost, self.on_topmost_toggle, parent_bg=self.BG)
-        sw.pack(side="left")
-        lbl = tk.Label(left, text="Always on top", font=(App.FONT, 9), fg=self.SUB,
-                       bg=self.BG, cursor="hand2")
-        lbl.pack(side="left", padx=(8, 0))
-        lbl.bind("<Button-1>", sw.flip)
-        tk.Label(left, text=VERSION, font=(App.FONT, 9), fg=self.SUB,
-                 bg=self.BG).pack(side="left", padx=(14, 0))
-        upd = tk.Label(left, text="\u21bb  Updates", font=(App.FONT, 9), fg=self.SUB,
-                       bg=self.BG, cursor="hand2")
-        upd.pack(side="left", padx=(14, 0))
-        upd.bind("<Button-1>", lambda _e: start_update_check(manual=True))
-        upd.bind("<Enter>", lambda _e: upd.configure(fg=self.TEXT))
-        upd.bind("<Leave>", lambda _e: upd.configure(fg=self.SUB))
-
-        self.reset_btn = tk.Label(foot, text="Reset stats", font=(App.FONT, 9),
-                                  fg=self.SUB, bg=self.BG, cursor="hand2")
-        self.reset_btn.pack(side="right")
+        self.sw = ToggleSwitch(cv, self.topmost, self.on_topmost_toggle, parent_bg=self.BG)
+        self.sw_win = cv.create_window(0, 0, window=self.sw, anchor="w")
+        self.ontop_lbl = CText(cv, "Always on top", (App.FONT, 9), self.SUB, "w")
+        self.ontop_lbl.bind("<Button-1>", self.sw.flip)
+        self.ver_lbl = CText(cv, VERSION, (App.FONT, 9), self.SUB, "w")
+        self.upd_lbl = CText(cv, "\u21bb  Updates", (App.FONT, 9), self.SUB, "w")
+        self.upd_lbl.bind("<Button-1>", lambda _e: start_update_check(manual=True))
+        self.reset_btn = CText(cv, "Reset stats", (App.FONT, 9), self.SUB, "e")
         self.reset_btn.bind("<Button-1>", self.on_reset_click)
-        self.reset_btn.bind("<Enter>", lambda _e: self.reset_btn.configure(
-            fg="#f87171" if self.reset_armed else self.TEXT))
-        self.reset_btn.bind("<Leave>", lambda _e: self.reset_btn.configure(
-            fg="#f87171" if self.reset_armed else self.SUB))
 
-        self.settings_btn = tk.Label(foot, text="\u2699  Settings", font=(App.FONT, 9),
-                                     fg=self.SUB, bg=self.BG, cursor="hand2")
-        self.settings_btn.pack(side="right", padx=(0, 16))
-        self.settings_btn.bind("<Button-1>", lambda _e: self.open_settings())
-        self.settings_btn.bind("<Enter>", lambda _e: self.settings_btn.configure(fg=self.TEXT))
-        self.settings_btn.bind("<Leave>", lambda _e: self.settings_btn.configure(fg=self.SUB))
+        def hover(txt, on_fg, off_fg):
+            txt.bind("<Enter>", lambda _e: (cv.configure(cursor="hand2"), txt.configure(fg=on_fg())))
+            txt.bind("<Leave>", lambda _e: (cv.configure(cursor=""), txt.configure(fg=off_fg())))
+        hover(self.ontop_lbl, lambda: self.TEXT, lambda: self.SUB)
+        hover(self.upd_lbl, lambda: self.TEXT, lambda: self.SUB)
+        hover(self.reset_btn, lambda: "#f87171" if self.reset_armed else self.TEXT,
+              lambda: "#f87171" if self.reset_armed else self.SUB)
 
     # ----- state updates -----
     def set_pill(self, key):
@@ -7479,13 +7976,13 @@ class App:
     def restore_geometry(self, w, h, min_h):
         """Saved size + position, kept inside the screen. Returns (w, h, x, y)."""
         win = settings.get("window")
-        if not win:
+        if not win or win.get("w", 0) < 600:      # old portrait layout saved: use the new default
             return w, h, 20, 20
         r = self.root
         vx, vy = r.winfo_vrootx(), r.winfo_vrooty()
         vw = max(r.winfo_vrootwidth(), r.winfo_screenwidth())
         vh = max(r.winfo_vrootheight(), r.winfo_screenheight())
-        w = min(max(win["w"], 400), vw)
+        w = min(max(win["w"], 640), vw)
         h = min(max(win["h"], min_h), vh)
         # keep a good part of the window (and its title bar) on a screen, e.g. after a
         # monitor was unplugged
