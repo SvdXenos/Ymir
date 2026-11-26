@@ -170,7 +170,7 @@ VERSION = "v1.5.6"        # release version tag
                           # (shown in the footer, next to "Always on top")
 
 # --- Update checker (footer > Updates) ---
-UPDATE_REPO = "NotNot5/Ymir-Hub"   # <-- your GitHub "owner/repo" (public). Releases are read from it
+UPDATE_REPO = "SvdXenos/Ymir"   # <-- your GitHub "owner/repo" (public). Releases are read from it
 UPDATE_CHECK_ON_START = True       # look for a newer release a moment after the window opens
 UPDATE_TIMEOUT = 15                # seconds before a GitHub request is given up
 
@@ -5685,7 +5685,7 @@ def fmt_time(sec):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
-GITHUB_URL = "https://github.com/NotNot5/Ymir-Hub"
+GITHUB_URL = "https://github.com/SvdXenos/Ymir"
 DISCORD_URL = "https://discord.gg/dFfFXEtRr9"     # Settings footer > Discord (invite link)
 PATREON_URL = "https://www.patreon.com/"          # Settings footer > Patreon  <-- put your Patreon page here
 # 64x64 alpha mask of the GitHub mark; it is tinted + resized at runtime (any theme colour, any DPI)
