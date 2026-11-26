@@ -1,87 +1,81 @@
 # Changelog
 
+## v6.0.0
+- Fix de traduction du bot
 ## v1.5.4
-- Improved the UI, Optional option to have less windows pop up
-- Added auto equip modifiers for rejoin feature
-- Added option to join VIP server when rejoining
-
-## Latest (v1.5.1)
-- Fixed and improved the failsafe feature
-- Fixed raid macro and improved it by a ton
-- Added slight UI animations (enable in UI settings)
-- Added Reconnect feature:
-### Reconnect 
-- Automatically rejoins the game when the game disconnects, failsafe fails or bot command `!reconnect` is used (for testing)
-- Must manually setup by providing all the required images and click locations
-- The rejoin feature will wait till the game is fully loaded, it will try multiple time to rejoin
-- Automaticaly creates lobby and starts the game and the macro continues normally
-
-## v1.5.0 - Massive update
-- Record your own custom macros
-- Added custom macro creator with simple syntaxes
-- Create any smart macro with image detection, Conditions, Tweakable timings etc
-- Share your macros with anyone 
-
+- Amélioration de l'interface utilisateur.
+- Ajout de l'équipement automatique des modificateurs lors de la reconnexion.
+- Ajout d'une option permettant de rejoindre un serveur VIP lors de la reconnexion.
+## Dernière version (v1.5.1)
+- Correction et amélioration du système de sécurité (Failsafe).
+- Correction et amélioration considérable de la macro de raid.
+- Ajout de légères animations dans l'interface (activables dans les paramètres de l'interface).
+- Ajout de la fonctionnalité de reconnexion :
+### Reconnexion
+- Rejoint automatiquement la partie lorsque le jeu se déconnecte, lorsque le système Failsafe échoue ou lorsque la commande Discord !reconnect est utilisée (à des fins de test).
+- Nécessite une configuration manuelle en fournissant toutes les images requises ainsi que les emplacements des clics.
+- La reconnexion attend que le jeu soit entièrement chargé et effectue plusieurs tentatives si nécessaire.
+- Crée automatiquement un salon, démarre la partie et permet à la macro de reprendre son fonctionnement normalement.
+## v1.5.0 - Mise à jour majeure
+- Possibilité d'enregistrer vos propres macros personnalisées.
+- Ajout d'un créateur de macros personnalisées utilisant une syntaxe simplifiée.
+- Possibilité de créer des macros intelligentes grâce à la détection d'images, aux conditions et aux délais personnalisables.
+- Possibilité de partager vos macros avec d'autres utilisateurs.
 ## v1.4.6
-- Fixed universal config again.
-- Added discord option option so you can use commands
-- The bot commands are `!screenshot` `!start` `!stop` `!pause`
-- Hopefully fixed virus detection(?)
-
+- Nouvelle correction de la configuration universelle.
+- Ajout d'une option Discord permettant d'utiliser des commandes à distance.
+- Les commandes du bot sont :
+  - !screenshot : prendre une capture d'écran.
+  - !start : démarrer la macro.
+  - !stop : arrêter la macro.
+  - !pause : mettre la macro en pause.
+- Correction espérée des fausses détections de virus (?).
 ## v1.4.5
-- Brought back the legacy UI
-- Added option to change the UI to a small top UI
-- Improved the GUI slightly
-
+- Rétablissement de l'ancienne interface utilisateur.
+- Ajout d'une option permettant de réduire l'interface à une petite barre située en haut de l'écran.
+- Légère amélioration de l'interface graphique.
 ## v1.4.4
-- Added Improved discord webhook
-- Special thanks to Hemo for helping with this 
+- Amélioration du système de notifications via les Webhooks Discord.
+- Remerciements particuliers à Hemo pour son aide.
+## v1.4.3 - Correctif
 
-## v1.4.3 Hotfix
-- Changed the exe builder to avoid false positive virus detections
+- Modification du générateur de fichiers .exe afin d'éviter les fausses détections de virus.
 
-## v1.4.2 Hotfix
-- Fixed blood awakening macro
-- Added a fix for those who have issues with shift lock at start
-
+## v1.4.2 - Correctif
+- Correction de la macro Blood Awakening.
+- Ajout d'un correctif pour les utilisateurs rencontrant des problèmes avec le verrouillage de la caméra (Shift Lock) au démarrage.
 ## v1.4.1
-- Improved and fixed every configs
-- Added Discord server
-- Added Guides section
-- Improved the GUI
-- Improved discord webhook
-
-
+- Amélioration et correction de toutes les configurations.
+- Ajout d'un serveur Discord.
+- Ajout d'une section regroupant les guides.
+- Amélioration de l'interface graphique.
+- Amélioration du système de notifications via les Webhooks Discord.
 ## v1.4.0
 
-### Female Raid
-- Must have `Atomic Armageddon`, `Divine decree`, `Blood Awakening`, `15th Commander`
-- Configure the macro in settings. The macro wont work unless you setup the chest button locations
-- If buttons or the loots are not being detected upload your own in `settings/config/Override-Asset`
-
-### Loot
-- Serum counters (attack, armor, female, beast, colossal) for missions and raids
-- Raids can track vessels
-- "Details" section with fragment and serum rows
-- If they dont detect upload your own in `settings/config/Override-Asset`
-
-### UI
-- Asset editor has UI and Loot tabs
-- Changelog in the footer
-- Four new themes: `Crimson`, `Mono`, `Gold`, `Midnight`
-
+### Raid féminin (Female Raid)
+- Nécessite les capacités suivantes : Atomic Armageddon, Divine Decree, Blood Awakening et 15th Commander.
+- Configurez la macro dans les paramètres. Elle ne fonctionnera pas tant que les emplacements des boutons des coffres n'auront pas été configurés.
+- Si les boutons ou les récompenses ne sont pas détectés, importez vos propres images dans settings/config/Override-Asset.
+### Butin (Loot)
+- Ajout de compteurs de sérums (Attaque, Armure, Féminin, Bête et Colossal) pour les missions et les raids.
+- Possibilité de suivre les vaisseaux pendant les raids.
+- Ajout d'une section « Détails » contenant les informations relatives aux fragments et aux sérums.
+- Si les éléments ne sont pas détectés, importez vos propres images dans settings/config/Override-Asset.
+### Interface utilisateur (UI)
+- L'éditeur de ressources dispose désormais de deux onglets : Interface et Butin.
+- Ajout de l'historique des modifications (Changelog) dans le pied de page.
+- Ajout de quatre nouveaux thèmes : Crimson, Mono, Gold et Midnight.
 ## v1.3.6
-* Added Fast mode in edit config to speed things up
-* Added option to skip the usage of order advance, Change the image of "mission_start.png" to the picture of shifting or founder's order to make the macro start with some other ability's picture
-
+- Ajout d'un mode rapide (Fast Mode) dans la modification des configurations afin d'accélérer les opérations.
+- Ajout d'une option permettant de ne plus utiliser Order Advance. Pour démarrer la macro avec une autre capacité, remplacez l'image mission_start.png par une capture de Shifting ou de Founder's Order.
 ## v1.3.5
 
-### Edit Config:
-* You are now able to edit the timings of every config to your liking
-* This feature will be more expanded in the future with even more customizability 
-### Asset Override:
-* If the images aren't being detected, you can simply upload your own screenshot
-* The Macro will work with any graphics settings/resolution and even with fullscreen (with Asset Override)
-### Improved Failsafe feature:
-* Now you have full customizability on where the macro should aim and how long to wait for the failsafe to trigger
-* This will be improved even more in the future
+### Modification des configurations (Edit Config)
+- Possibilité de modifier les délais d'exécution de chaque configuration selon vos préférences.
+- Cette fonctionnalité sera davantage développée à l'avenir, avec encore plus de possibilités de personnalisation.
+### Remplacement des ressources (Asset Override)
+- Si les images ne sont pas détectées, vous pouvez importer vos propres captures d'écran.
+- La macro fonctionnera avec tous les paramètres graphiques et toutes les résolutions, y compris en plein écran (grâce à la fonctionnalité Asset Override).
+### Amélioration du système de sécurité (Failsafe)
+- Personnalisation complète de la zone que la macro doit viser ainsi que du temps d'attente avant le déclenchement du système de sécurité.
+- Cette fonctionnalité bénéficiera de nouvelles améliorations à l'avenir.

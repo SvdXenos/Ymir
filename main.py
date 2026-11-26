@@ -8258,7 +8258,7 @@ class SettingsWindow(tk.Toplevel):
         lbl.pack(side="left", padx=(8, 0))
         lbl.bind("<Button-1>", sw.flip)
         self.flat_button(row, "Send test message", self.test_webhook).pack(side="right")
-        self.hint(c, "By Hemo")
+        self.hint(c, "Par Xo9")
 
         c = self.card(page, "BOT", "Your bot posts the messages and listens for commands in one channel.")
         self.bot_outer = c.master
