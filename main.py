@@ -3025,7 +3025,7 @@ def mission_embed(result, found, mission_seconds=None):
                    field(ui_word("mission_time").upper(), f"`{length}`"),
                    field("RUN TIME", f"`{run}`"),
                    *loot_fields],
-        "footer": {"text": "ymir  ·  by soul.py"},
+        "footer": {"text": "ymir  ·  par Xo9.py"},
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -8365,8 +8365,8 @@ class SettingsWindow(tk.Toplevel):
             try:
                 png = cv2.imencode(".png", grab_roblox())[1].tobytes()
                 embed = dict(mission_embed(("completed",), set()),
-                             title="Test message  ·  the webhook works")
-                ok, msg = post_webhook("Test message from ymir - the webhook works.",
+                             title="Message de test  ·  le webhook fonctionne")
+                ok, msg = post_webhook("Message de test depuis les chemins par Ymir - le webhook fonctionne.",
                                        png=png, embed=embed)
             except Exception as e:  # noqa: BLE001
                 ok, msg = False, f"Could not take the screenshot: {type(e).__name__}: {e}"
