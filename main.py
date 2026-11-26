@@ -166,7 +166,7 @@ if IS_WIN:
     pydirectinput.moveTo = _moveTo
 
 # ----------------------------- SETTINGS ---------------------------------
-VERSION = "v1.5.6"        # release version tag
+VERSION = "v1.5.7"        # release version tag
                           # (shown in the footer, next to "Always on top")
 
 # --- Update checker (footer > Updates) ---
